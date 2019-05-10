@@ -122,7 +122,7 @@ class Server < Sinatra::Base
 
     module_name = sanitize_input(module_name)
     $logger.info("Deploying module #{module_name} in the background.")
-    Process.detach(fork { deploy_module(module_name) })
+    deploy_module(module_name)
   end
 
   # Simulate a github post:
@@ -212,7 +212,7 @@ class Server < Sinatra::Base
       return 200
     else
       $logger.info("Deploying environment #{env} in the background")
-      Process.detach(fork { deploy(env, deleted) })
+      deploy(env, deleted)
     end
   end
 
@@ -259,9 +259,9 @@ class Server < Sinatra::Base
         # more or less simultaneously. To mitigate, we just lock on a file and wait for
         # the other one to complete.
         file.flock(File::LOCK_EX)
-
+ 
         message = "triggered: #{command}"
-        exec "#{command} &"
+        fork { exec "#{command}" }
         exit_status = 0
         raise "#{stdout}\n#{stderr}" if exit_status != 0
       end
@@ -270,7 +270,14 @@ class Server < Sinatra::Base
 
     def generate_types(environment)
       begin
-        command = "#{$command_prefix} /opt/puppetlabs/bin/puppet generate types --environment #{environment.gsub(/\W/, '_')}"
+        if $config['use_mcollective']
+          command = "#{$command_prefix} mco r10k generate_types #{environment.gsub(/\W/, '_')}"
+          # because of the r10k racing condition issue  wait for other r10k processes to finish
+          # https://github.com/voxpupuli/puppet-r10k/pull/268
+          Process.waitall
+        else
+          command = "#{$command_prefix} /opt/puppetlabs/bin/puppet generate types --environment #{environment.gsub(/\W/, '_')}"
+        end
 
         message = run_command(command)
         $logger.info("message: #{message} environment: #{environment}")
